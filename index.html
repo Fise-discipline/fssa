@@ -66,6 +66,8 @@ ul.hist { padding-left: 18px; } ul.compact { columns: 2; font-size: 13px; }
 .ri { margin: 0 0 6px 26px; padding-left: 8px; border-left: 2px solid #e3e7ec; } .ri label.chk { padding: 0; }
 .profil { background: #f7f9fb; padding: 8px 10px; border-radius: 6px; }
 .import-box { background: #fff8e1; border: 1px solid #f1d98a; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+pre.log { background: #0f172a; color: #e2e8f0; padding: 8px 10px; border-radius: 6px; max-height: 260px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 
 </style>
 </head>
@@ -516,6 +518,38 @@ const Model = {
     return 'trimisă';
   },
   verifPath(fx) { return `_Verificare/${fx.dep}/${fx.titular}/${fx.id}.verif.json`; },
+
+  /* ---------- Faza 4: planul de drepturi pe foldere (matricea din spec §5), derivat din persoane.json + roluri ----------
+     Părinții înaintea copiilor: la ruperea moștenirii SharePoint copiază drepturile existente ale părintelui. */
+  permissionPlan() {
+    const R = REF, rol = R.roluri || {};
+    const deps = Object.keys(R.reguli.departamente || {});
+    const upn = (k) => (R.pers[k] && R.pers[k].upn) || null;
+    const staff = R.persoane.filter((p) => p.key && !p.key.includes('vacant') && !p.asociat && p.departament && p.key !== rol.decan);
+    const all = staff.map((p) => upn(p.key)).filter(Boolean);
+    const lipsa = staff.filter((p) => !upn(p.key)).map((p) => p.key);
+    const secr = (rol.secretariat || []).map(upn).filter(Boolean);
+    const plan = [];
+    const add = (path, role, emails, note) => { const e = [...new Set(emails.filter(Boolean))]; if (e.length) plan.push({ path, role, emails: e, note }); };
+    add('00_Referinta', 'read', all, 'toți: citire referință');
+    add('00_Referinta', 'write', secr, 'secretariat: scriere referință');
+    add('_Import', 'write', secr, 'secretariat');
+    add('Publicate', 'read', all, 'toți');
+    add('_Repartizare', 'read', all, 'toți: citire repartizări');
+    for (const dep of deps) {
+      const d = (rol.directori || {})[dep];
+      const du = d && d !== rol.decan ? upn(d) : null;
+      add(`${dep}`, 'write', [du], `director ${dep}: tot departamentul (inclusiv _Asociati)`);
+      add(`_Verificare/${dep}`, 'write', [du], `director ${dep}: verdicte`);
+      add(`_Repartizare/${dep}.json`, 'write', [du], `director ${dep}: repartizarea (fișierul se creează dacă lipsește)`);
+    }
+    for (const p of staff) {
+      const u = upn(p.key); if (!u) continue;
+      add(`${p.departament}/${p.key}`, 'write', [u], `${p.afisare}: folderul propriu`);
+      add(`_Verificare/${p.departament}/${p.key}`, 'read', [u], `${p.afisare}: citește verdictele`);
+    }
+    return { plan, lipsa, conturi: all.length };
+  },
 };
 
 window.Model = Model;
@@ -756,6 +790,7 @@ class GraphStorage {
     const u = new URL(this.cfg.siteUrl);
     const site = await this._json(`${this.base}/sites/${u.hostname}:${u.pathname.replace(/\/$/, '')}`);
     this.siteId = site.id; this.webUrl = site.webUrl;
+    if (this.cfg.driveId) { this.driveId = this.cfg.driveId; return this; }   // configurat explicit: nu depinde de listarea bibliotecilor
     const drives = await this._json(`${this.base}/sites/${this.siteId}/drives?$select=id,name,webUrl`);
     const norm = (s) => (s || '').normalize('NFKC').replace(/[\s–—-]+/g, ' ').trim().toLowerCase();
     const d = (drives.value || []).find((x) => norm(x.name) === norm(this.cfg.library)) || (drives.value || []).find((x) => norm(x.name).includes('fișe') || norm(x.name).includes('fise'));
@@ -820,6 +855,24 @@ class GraphStorage {
   /* conversia .docx -> PDF pe serverele Microsoft (fișierul trebuie să fie deja în bibliotecă) */
   async pdf(p) { return (await this._fetch(this._item(p, '/content') + '?format=pdf')).arrayBuffer(); }
   async webUrlOf(p) { try { return (await this._json(this._item(p) + '?$select=webUrl')).webUrl; } catch { return null; } }
+  /* ---- administrare (decan): conturi Entra, drepturi pe foldere ---- */
+  async users(filter) {
+    const j = await this._json(`${this.base}/users?$filter=${encodeURIComponent(filter)}&$select=id,displayName,userPrincipalName,surname,givenName,mail,accountEnabled,jobTitle&$top=25`);
+    return j.value || [];
+  }
+  async user(upn) { try { return await this._json(`${this.base}/users/${encodeURIComponent(upn)}?$select=id,displayName,userPrincipalName,surname,givenName,accountEnabled`); } catch (e) { if (e.status === 404) return null; throw e; } }
+  /* acordă drept direct (read | write) unor conturi pe un folder/fișier; SharePoint rupe moștenirea pe element și copiază drepturile părintelui */
+  async invite(p, emails, role) {
+    if (!emails.length) return [];
+    const body = { requireSignIn: true, sendInvitation: false, roles: [role], recipients: emails.map((e) => ({ email: e })) };
+    const j = await this._json(this._item(p, '/invite'), { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+    return j.value || [];
+  }
+  async permissions(p) {
+    const j = await this._json(this._item(p, '/permissions'));
+    return (j.value || []).map((x) => ({ id: x.id, roles: x.roles || [], user: x.grantedToV2 && x.grantedToV2.user ? (x.grantedToV2.user.email || x.grantedToV2.user.displayName) : (x.grantedToV2 && x.grantedToV2.siteGroup ? 'grup: ' + x.grantedToV2.siteGroup.displayName : (x.grantedTo && x.grantedTo.user ? (x.grantedTo.user.email || x.grantedTo.user.displayName) : (x.link ? 'link' : '?'))), inherited: !!x.inheritedFrom }));
+  }
+  async removePermission(p, permId) { await this._fetch(this._item(p, `/permissions/${permId}`), { method: 'DELETE' }); }
 }
 
 /* identitatea: contul M365 -> cheia din persoane.json (UPN exact; altfel nume + prenume; altfel numele în UPN) */
@@ -1020,6 +1073,7 @@ function renderNav() {
     <a href="#fise">Fișele mele</a>
     ${can.dashboard() ? '<a href="#bord">Tablou de bord</a>' : ''}
     ${u.rol === 'decan' ? Object.keys(Model.REF.reguli.departamente).map((d) => `<a href="#repartizare/${d}">Repartizare ${d}</a>`).join('') : (u.rol === 'director' ? `<a href="#repartizare/${u.dep}">Repartizare ${u.dep}</a>` : '')}
+    ${u.rol === 'decan' && state.st.invite ? '<a href="#admin">Administrare</a>' : ''}
     <span class="spacer"></span>
     <span class="who">${esc(u.nume)} <small>(${esc(u.rol)}${u.dep ? ' ' + esc(u.dep) : ''} · ${esc(state.mode)})</small></span>
     ${state.mode === 'SharePoint' ? '<a href="#" id="nav-logout" class="small">deconectare</a>' : '<a href="#identitate" class="small">schimbă</a>'}` : '';
@@ -1381,6 +1435,112 @@ async function viewRepartizare(dep) {
   render();
 }
 
+/* ---------- administrare (decan, mod SharePoint): conturi Entra + drepturi pe foldere (Faza 4) ---------- */
+const stripDia = (t) => (t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const odata = (t) => String(t).replace(/'/g, "''");
+async function findAccounts(st, p) {
+  /* candidați din Entra pentru o persoană: după nume (cu/fără diacritice), apoi după prenume */
+  const seen = new Map();
+  const tries = [`startswith(surname,'${odata(p.nume)}')`, `startswith(surname,'${odata(stripDia(p.nume))}')`, `startswith(displayName,'${odata(p.nume)}')`, `startswith(displayName,'${odata(stripDia(p.nume))}')`];
+  if (p.prenume) tries.push(`startswith(givenName,'${odata((p.prenume || '').split(/[\s-]/)[0])}')`);
+  for (const f of tries) {
+    try { for (const u of await st.users(f)) seen.set(u.userPrincipalName, u); } catch (e) { console.warn('users', f, e.message); }
+  }
+  const key = (t) => stripDia(t).toLowerCase().replace(/[^a-z]/g, '');
+  const sn = key(p.nume), gn = key((p.prenume || '').split(/[\s-]/)[0]);
+  const scored = [...seen.values()].filter((u) => u.accountEnabled !== false).map((u) => {
+    const usn = key(u.surname), ugn = key(u.givenName), udn = key(u.displayName), ul = key((u.userPrincipalName || '').split('@')[0]);
+    let sc = 0;
+    if (usn === sn || udn.includes(sn) || ul.includes(sn)) sc += 2;
+    if (gn && (ugn === gn || udn.includes(gn) || ul.includes(gn))) sc += 1;
+    return { u, sc };
+  }).filter((x) => x.sc >= 2).sort((a, b) => b.sc - a.sc);
+  return scored;
+}
+async function viewAdmin() {
+  const u = state.user;
+  if (!u || u.rol !== 'decan' || !state.st.invite) { location.hash = '#fise'; return; }
+  const R = Model.REF, st = state.st;
+  const staff = R.persoane.filter((p) => p.key && !p.key.includes('vacant') && !p.asociat && p.departament);
+  if (state.me && R.pers[u.key] && !R.pers[u.key].upn) R.pers[u.key].upn = state.me.userPrincipalName;
+  const cand = state.adminCand || (state.adminCand = {});
+  const render = () => {
+    const { plan, lipsa, conturi } = Model.permissionPlan();
+    $('#app').innerHTML = `<div class="card">
+      <h1>Administrare <small class="muted">decan · ${esc(state.mode)}</small></h1>
+      <h2>Conexiune</h2>
+      <table class="kv"><tr><th>Site</th><td>${esc(st.cfg.siteUrl)} <small class="muted">${esc(st.siteId || '')}</small></td></tr>
+        <tr><th>Bibliotecă</th><td>${esc(st.name)} <small class="muted">driveId: <code>${esc(st.driveId || '')}</code> — pentru robustețe, adăugați în config.js: <code>driveId: "${esc(st.driveId || '')}"</code></small></td></tr>
+        <tr><th>Contul dvs.</th><td>${esc(state.me ? state.me.userPrincipalName : '')}</td></tr></table>
+
+      <h2>1. Conturile M365 ale cadrelor <small class="muted">${conturi} cu UPN · ${lipsa.length} fără</small></h2>
+      <p class="muted">UPN-ul leagă contul M365 de persoana din referință; fără el nu se pot acorda drepturi și identificarea la conectare se face doar după nume. Căutarea folosește Entra (User.ReadBasic.All).</p>
+      <p><button id="a-cauta">Caută în Entra conturile lipsă</button> <button id="a-save" class="primary">Salvează UPN-urile în persoane.json</button></p>
+      <table class="grid"><thead><tr><th>Dep.</th><th>Persoana</th><th>UPN (@afahc.ro)</th><th>Candidați din Entra</th></tr></thead><tbody>
+      ${staff.map((p) => `<tr data-key="${esc(p.key)}"><td>${esc(p.departament)}</td><td>${esc(p.afisare)}${Model.rolOf(p.key).rol !== 'cadru' ? ` <small class="muted">(${esc(Model.rolOf(p.key).rol)})</small>` : ''}</td>
+        <td><input data-upn value="${esc(p.upn || '')}" placeholder="prenume.nume@afahc.ro" style="width:18em"></td>
+        <td>${(cand[p.key] || []).length ? cand[p.key].map((c) => `<button class="small" data-pick="${esc(p.key)}" data-val="${esc(c.u.userPrincipalName)}" title="${esc(c.u.displayName)}">${esc(c.u.userPrincipalName)}${c.sc >= 3 ? ' ✓' : ''}</button>`).join(' ') : (cand[p.key] ? '<span class="bad">niciun cont găsit</span>' : '')}</td></tr>`).join('')}
+      </tbody></table>
+
+      <h2>2. Drepturile pe foldere <small class="muted">${plan.length} atribuiri · ordinea: părinții înaintea copiilor</small></h2>
+      <p class="muted">Fiecare rând = un drept direct (<i>read</i> sau <i>write</i>) acordat prin Microsoft Graph pe folderul/fișierul respectiv; SharePoint rupe moștenirea pe element și copiază drepturile părintelui, de aceea părinții se acordă primii. Decanul este owner al site-ului și nu apare. Re-rularea este sigură (dreptul existent nu se dublează).</p>
+      ${lipsa.length ? `<p class="warn">Fără UPN (nu primesc drepturi până nu se completează): ${lipsa.map(Model.numeOf).map(esc).join(', ')}.</p>` : ''}
+      <table class="grid"><thead><tr><th>Cale</th><th>Drept</th><th>Conturi</th><th>Notă</th></tr></thead><tbody>
+      ${plan.map((x) => `<tr><td><code>${esc(x.path)}</code></td><td>${esc(x.role)}</td><td><small>${x.emails.length > 4 ? `${x.emails.length} conturi` : esc(x.emails.join(', '))}</small></td><td><small class="muted">${esc(x.note)}</small></td></tr>`).join('')}
+      </tbody></table>
+      <p><button id="a-apply" class="primary">Aplică drepturile (${plan.length})</button> <button id="a-audit">Audit: drepturile existente</button></p>
+      <pre id="a-log" class="log"></pre>
+      <div id="a-audit-out"></div>
+    </div>`;
+    $$('tr[data-key] input[data-upn]').forEach((inp) => inp.onchange = () => { R.pers[inp.closest('tr').dataset.key].upn = inp.value.trim() || null; render(); });
+    $$('button[data-pick]').forEach((b) => b.onclick = () => { R.pers[b.dataset.pick].upn = b.dataset.val; render(); });
+    $('#a-cauta').onclick = async () => {
+      const todo = staff.filter((p) => !p.upn);
+      toast(`Caut ${todo.length} conturi în Entra…`);
+      for (const p of todo) {
+        try { const c = await findAccounts(st, p); cand[p.key] = c; if (c.length === 1 || (c.length > 1 && c[0].sc > c[1].sc && c[0].sc >= 3)) p.upn = c[0].u.userPrincipalName; }
+        catch (e) { toast(`${p.afisare}: ${e.message}`, 'error'); }
+      }
+      render();
+    };
+    $('#a-save').onclick = async () => {
+      try {
+        const data = { persoane: R.persoane.map((p) => Object.assign({}, p, { verificat: !!p.upn })) };
+        await st.writeText('00_Referinta/persoane.json', JSON.stringify(data, null, 1));
+        toast('persoane.json salvat în referință.');
+      } catch (e) { toast('Nu s-a putut salva: ' + e.message, 'error'); }
+    };
+    const log = (m) => { const el = $('#a-log'); el.textContent += m + '\n'; el.scrollTop = el.scrollHeight; };
+    $('#a-apply').onclick = async () => {
+      const b = $('#a-apply');
+      if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = `Confirmați: se acordă ${plan.length} drepturi pe „${st.name}” — apăsați din nou`; b.classList.add('danger'); return; }
+      b.disabled = true;
+      let ok = 0, err = 0;
+      for (const dep of Object.keys(R.reguli.departamente)) {
+        const f = `_Repartizare/${dep}.json`;
+        if (!(await st.exists(f))) { try { await st.writeText(f, JSON.stringify({ departament: dep, atribuiri: {} }, null, 1)); log(`creat ${f}`); } catch (e) { log(`EROARE la crearea ${f}: ${e.message}`); } }
+      }
+      for (const x of plan) {
+        try { await st.invite(x.path, x.emails, x.role); ok++; log(`✔ ${x.role.padEnd(5)} ${x.path}  ← ${x.emails.length > 4 ? x.emails.length + ' conturi' : x.emails.join(', ')}`); }
+        catch (e) { err++; log(`✖ ${x.role.padEnd(5)} ${x.path}: ${e.message}`); }
+      }
+      log(`gata: ${ok} reușite, ${err} erori`);
+      toast(err ? `${err} erori la acordarea drepturilor` : 'Drepturile au fost aplicate.', err ? 'error' : 'info');
+      b.disabled = false; b.dataset.armed = ''; b.textContent = `Aplică drepturile (${plan.length})`; b.classList.remove('danger');
+    };
+    $('#a-audit').onclick = async () => {
+      const paths = [...new Set(plan.map((x) => x.path))];
+      const out = [];
+      for (const p of paths) {
+        try { const perms = await st.permissions(p); out.push(`<tr><td><code>${esc(p)}</code></td><td>${perms.map((q) => `${esc(q.user)} <small class="muted">[${esc(q.roles.join(','))}${q.inherited ? ', moștenit' : ''}]</small>`).join('<br>') || '<span class="muted">—</span>'}</td></tr>`); }
+        catch (e) { out.push(`<tr><td><code>${esc(p)}</code></td><td class="bad">${esc(e.message)}</td></tr>`); }
+      }
+      $('#a-audit-out').innerHTML = `<h3>Drepturi existente</h3><table class="grid"><thead><tr><th>Cale</th><th>Cine / drept</th></tr></thead><tbody>${out.join('')}</tbody></table>`;
+    };
+  };
+  render();
+}
+
 /* ---------- rutare ---------- */
 async function route() {
   if (!state.st) { viewStart(); return; }
@@ -1392,6 +1552,7 @@ async function route() {
     if (v === 'fisa') await viewFisa(decodeURIComponent(rest.join('/')));
     else if (v === 'bord') await viewBord();
     else if (v === 'repartizare') await viewRepartizare(rest[0]);
+    else if (v === 'admin') await viewAdmin();
     else await viewFise();
   } catch (e) { console.error(e); $('#app').innerHTML = `<div class="card"><p class="warn">Eroare: ${esc(e.message)}</p></div>`; }
   window.scrollTo(0, 0);
