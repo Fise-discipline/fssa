@@ -1,0 +1,1 @@
+window.CONFIG = { clientId: "fda32508-8148-4d7a-955f-d55f95ecd658", tenantId: "2dc822ad-38e1-4ccd-b62e-adf91f076b13", siteUrl: "https://afahc.sharepoint.com/sites/FiseDisciplinaFSSA", library: "FSSA – Fișe disciplină 2026", scopes: ["User.Read", "Sites.ReadWrite.All"] };
