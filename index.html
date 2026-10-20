@@ -787,10 +787,16 @@ class GraphStorage {
   async _json(url, opts) { return (await this._fetch(url, opts)).json(); }
   /* site + drive din siteUrl („https://tenant.sharepoint.com/sites/FSSA”) și numele bibliotecii */
   async init() {
+    if (this.cfg.driveId) {
+      /* biblioteca configurată explicit: cadrele au doar „acces limitat” pe site și pe rădăcina bibliotecii,
+         deci nu pot căuta site-ul/bibliotecile; adresarea pe cale (/drives/{id}/root:/…) merge pentru elementele la care au drept */
+      this.driveId = this.cfg.driveId;
+      try { const u = new URL(this.cfg.siteUrl); const site = await this._json(`${this.base}/sites/${u.hostname}:${u.pathname.replace(/\/$/, '')}?$select=id,webUrl`); this.siteId = site.id; this.webUrl = site.webUrl; } catch (e) { console.warn('site:', e.message); }
+      return this;
+    }
     const u = new URL(this.cfg.siteUrl);
     const site = await this._json(`${this.base}/sites/${u.hostname}:${u.pathname.replace(/\/$/, '')}`);
     this.siteId = site.id; this.webUrl = site.webUrl;
-    if (this.cfg.driveId) { this.driveId = this.cfg.driveId; return this; }   // configurat explicit: nu depinde de listarea bibliotecilor
     const drives = await this._json(`${this.base}/sites/${this.siteId}/drives?$select=id,name,webUrl`);
     const norm = (s) => (s || '').normalize('NFKC').replace(/[\s–—-]+/g, ' ').trim().toLowerCase();
     const d = (drives.value || []).find((x) => norm(x.name) === norm(this.cfg.library)) || (drives.value || []).find((x) => norm(x.name).includes('fișe') || norm(x.name).includes('fise'));
