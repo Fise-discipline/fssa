@@ -93,6 +93,8 @@ td.locked { background: #F6F7FA; color: #2B3240; }
 table.rows th, table.rows td { border: 1px solid var(--line-2); padding: 5px 7px; vertical-align: top; }
 table.rows th { background: #F6F7FA; text-align: left; font-weight: 600; font-size: 13.5px; }
 .tablewrap { overflow-x: auto; }
+.met { display: flex; flex-direction: column; gap: 3px; }
+.met select { font-size: 12.5px; padding: 3px 6px; color: var(--muted); width: 100%; }
 
 /* ---- câmpuri ---- */
 textarea, input:not([type=checkbox]):not([type=file]), select { font: inherit; padding: 6px 9px; border: 1px solid #B9C0CF; border-radius: var(--r-s); background: #fff; color: var(--ink); }
@@ -450,6 +452,29 @@ const Model = {
     };
   },
   TIP_NAME: { S: 'seminar', L: 'laborator', A: 'aplicații', P: 'proiect' },
+  /* metodele de predare predefinite (meniul din 8.1/8.2): combinațiile uzuale din fișele FSSA, apoi metodele simple;
+     reguli.json → texte.metode_predare {curs:[], aplicatii:[]} le poate înlocui fără rebuild */
+  METODE: {
+    curs: ['prelegere-dezbatere, problematizare', 'prelegere, explicație, problematizare', 'prelegere-dezbatere, conversație, problematizare', 'prelegere-dezbatere, studiu de caz',
+      'prelegere-dezbatere, problematizare, exercițiul, demonstrația', '—',
+      'prelegere', 'prelegere-dezbatere', 'expunere', 'explicație', 'conversație', 'dezbatere', 'problematizare', 'demonstrație', 'algoritmizare', 'modelare',
+      'studiu de caz', 'exercițiul', 'analiză de documente', 'materiale scrise/audio-video', 'prezentare PowerPoint'],
+    aplicatii: ['explicație, demonstrare, exersare', 'demonstrație, exerciții și studiu de caz', 'demonstrație, modelare', 'problematizare, rezolvare de probleme',
+      'metode activ-participative și de autoevaluare', 'studiu de caz, dezbatere', 'expunere, observarea sistematică și independentă, modelare', '—',
+      'demonstrație', 'exercițiul', 'rezolvare de probleme', 'problematizare', 'modelare', 'simulare', 'experiment demonstrativ-aplicativ', 'lucrări practice', 'studiu de caz',
+      'dezbatere', 'joc de rol', 'prezentarea și dezbaterea referatelor', 'observarea sistematică și independentă', 'metode activ-participative', 'autoevaluare', 'evaluare'],
+  },
+  metodePredare(key) { const T = (REF.reguli.texte || {}).metode_predare || {}; return T[key] || Model.METODE[key] || []; },
+  /* metodele de evaluare predefinite (10.1 / 10.2); reguli.json → texte.metode_evaluare {curs:[], apl:[]} le poate înlocui */
+  METODE_EV: {
+    curs: ['examinare scrisă', 'examinare orală', 'examinare scrisă și orală', 'test tip grilă', 'test scris pe platforma e-learning (Moodle), susținut în sală',
+      'examen scris: subiecte teoretice și aplicații (probleme)', 'examinare orală: subiecte teoretice', 'portofoliu individual', 'eseu academic', 'prezentare de proiect',
+      'colocviu', 'verificare finală (test scris)'],
+    apl: ['evaluare pe parcurs, scrisă și/sau orală', 'teste de progres', 'teste aplicate la finalul temelor', 'lucrări practice (verificare, apreciere, notare)',
+      'verificarea și notarea rezolvării problemelor', 'elaborarea și susținerea unui referat', 'studiu de caz prezentat și dezbătut', 'participarea activă la dezbateri',
+      'test practic (simulare)', 'proiect / portofoliu', 'fișe de seminar/laborator evaluate', 'probe practice specifice'],
+  },
+  metodeEvaluare(key) { const T = (REF.reguli.texte || {}).metode_evaluare || {}; return T[key] || Model.METODE_EV[key] || []; },
   roman(n) { return ['', 'I', 'II', 'III', 'IV', 'V', 'VI'][n] || String(n); },
   titulaturaOf(key) {
     const p = REF.pers[key];
@@ -1265,12 +1290,13 @@ function renderEditor(fx, doc, verif, ctx) {
   const check = (p, value, label, extra = '') => { const arr = getPath(doc, p) || []; return `<label class="chk"><input type="checkbox" data-arr="${p}" data-value="${esc(value)}" ${arr.includes(value) ? 'checked' : ''} ${ro}> ${label}${extra}</label>`; };
   const compGroup = (grp, titlu) => g.comp[grp].length ? `<div class="cgroup"><b>${titlu}</b>${g.comp[grp].map((c) => check('date.competente.' + grp, c.cod, `<b>${esc(c.cod)}</b> ${esc(c.denumire)}`, c.descriere ? `<small class="muted"> — ${esc(c.descriere)}</small>` : '')
       + (g.tip === 'master' && (c.ri || []).length ? `<div class="ri">${c.ri.map((r) => check('date.rezultate', `${c.cod}|${r}`, `<small>${esc(r)}</small>`)).join('')}</div>` : '')).join('')}</div>` : '';
+  const metPick = (path, lista) => ctx.editable ? `<select data-met="${path}" title="Adaugă o metodă predefinită"><option value="">+ alege metoda</option>${lista.map((m) => m === '—' ? '<option disabled>──────</option>' : `<option value="${esc(m)}">${esc(m)}</option>`).join('')}</select>` : '';
   const rowsTable = (key, cols, withTip) => {
     const rows = D[key] || [];
-    return `<table class="rows" data-rows="${key}"><thead><tr>${withTip ? '<th style="width:7em">Tip</th>' : ''}<th>Tema</th><th style="width:4em">Ore</th><th style="width:12em">Metode de predare</th><th style="width:10em">Observații</th><th style="width:2em"></th></tr></thead><tbody>
+    return `<table class="rows" data-rows="${key}"><thead><tr>${withTip ? '<th style="width:7em">Tip</th>' : ''}<th>Tema</th><th style="width:4em">Ore</th><th style="width:15em">Metode de predare</th><th style="width:9em">Observații</th><th style="width:2em"></th></tr></thead><tbody>
       ${rows.map((r, i) => `<tr>${withTip ? `<td><select data-path="date.${key}.${i}.tip" ${ro}>${sd.tipuriApl.map((t) => `<option value="${t}" ${r.tip === t ? 'selected' : ''}>${t} – ${tipName[t]}</option>`).join('')}</select></td>` : ''}
         <td><textarea rows="1" data-path="date.${key}.${i}.tema" ${ro}>${esc(r.tema)}</textarea></td><td><input type="number" min="0" step="1" data-path="date.${key}.${i}.ore" data-num="1" value="${esc(r.ore ?? '')}" ${ro}></td>
-        <td><input data-path="date.${key}.${i}.metode" value="${esc(r.metode)}" ${ro}></td><td><input data-path="date.${key}.${i}.obs" value="${esc(r.obs)}" ${ro}></td>
+        <td><div class="met"><textarea rows="1" data-path="date.${key}.${i}.metode" ${ro} placeholder="metode, separate prin virgulă">${esc(r.metode)}</textarea>${metPick(`date.${key}.${i}.metode`, Model.metodePredare(key))}</div></td><td><input data-path="date.${key}.${i}.obs" value="${esc(r.obs)}" ${ro}></td>
         <td>${ctx.editable ? `<button class="x" data-del="${key}:${i}" title="Șterge rândul">✕</button>` : ''}</td></tr>`).join('')}
       </tbody></table>${ctx.editable ? `<button class="small" data-add="${key}">+ adaugă temă</button>` : ''}`;
   };
@@ -1359,8 +1385,9 @@ function renderEditor(fx, doc, verif, ctx) {
 
     <h2 id="s10">10. Evaluare</h2>
     <table class="rows"><thead><tr><th style="width:9em">Tip activitate</th><th>Criterii de evaluare</th><th style="width:14em">Metode de evaluare</th><th style="width:6em">Pondere %</th></tr></thead><tbody>
-      <tr><th>10.1 Curs</th><td><textarea rows="2" data-path="date.evaluare.curs.criterii" ${ro}>${esc(D.evaluare.curs.criterii)}</textarea></td><td><textarea rows="2" data-path="date.evaluare.curs.metode" ${ro}>${esc(D.evaluare.curs.metode)}</textarea></td><td><input type="number" min="0" max="100" data-path="date.evaluare.curs.pondere" data-num="1" value="${esc(D.evaluare.curs.pondere ?? '')}" ${ro} class="num"></td></tr>
-      <tr><th>10.2 Seminar/laborator/aplicații/proiect</th><td><textarea rows="2" data-path="date.evaluare.apl.criterii" ${ro || (sd.apl ? '' : 'disabled')}>${esc(D.evaluare.apl.criterii)}</textarea></td><td><textarea rows="2" data-path="date.evaluare.apl.metode" ${ro || (sd.apl ? '' : 'disabled')}>${esc(D.evaluare.apl.metode)}</textarea></td><td><input type="number" min="0" max="100" data-path="date.evaluare.apl.pondere" data-num="1" value="${esc(D.evaluare.apl.pondere ?? '')}" ${ro || (sd.apl ? '' : 'disabled')} class="num"></td></tr>
+      <tr><th>10.1 Curs</th><td><textarea rows="2" data-path="date.evaluare.curs.criterii" ${ro}>${esc(D.evaluare.curs.criterii)}</textarea></td><td><div class="met"><textarea rows="2" data-path="date.evaluare.curs.metode" ${ro}>${esc(D.evaluare.curs.metode)}</textarea>${metPick('date.evaluare.curs.metode', Model.metodeEvaluare('curs'))}</div></td><td><input type="number" min="0" max="100" data-path="date.evaluare.curs.pondere" data-num="1" value="${esc(D.evaluare.curs.pondere ?? '')}" ${ro} class="num"></td></tr>
+      <tr><th>10.2 Seminar/laborator/aplicații/proiect</th><td><textarea rows="2" data-path="date.evaluare.apl.criterii" ${ro || (sd.apl ? '' : 'disabled')}>${esc(D.evaluare.apl.criterii)}</textarea></td><td><div class="met"><textarea rows="2" data-path="date.evaluare.apl.metode" ${ro || (sd.apl ? '' : 'disabled')}>${esc(D.evaluare.apl.metode)}</textarea>${sd.apl ? metPick('date.evaluare.apl.metode', Model.metodeEvaluare('apl')) : ''}</div></td><td><input type="number" min="0" max="100" data-path="date.evaluare.apl.pondere" data-num="1" value="${esc(D.evaluare.apl.pondere ?? '')}" ${ro || (sd.apl ? '' : 'disabled')} class="num"></td></tr>
+      <tr><th>Suma ponderilor</th><td colspan="2" class="muted">10.1 + 10.2 trebuie să dea 100 %${sd.apl ? '' : ' (disciplina nu are aplicații: 10.1 = 100 %)'}</td><td><b id="sum-pond">—</b></td></tr>
       <tr><th>10.3 Standard minim de performanță</th><td colspan="3"><textarea rows="2" data-path="date.evaluare.standard_minim" ${ro}>${esc(D.evaluare.standard_minim)}</textarea></td></tr></tbody></table>
   </div>
   ${verifPanel()}
@@ -1391,6 +1418,7 @@ function renderEditor(fx, doc, verif, ctx) {
     $('#ft-sum').textContent = (D.fond_timp || []).reduce((a, x) => a + num(x), 0);
     $('#sum-curs').textContent = (D.curs || []).reduce((a, r) => a + num(r.ore), 0);
     if ($('#sum-apl')) $('#sum-apl').textContent = sd.tipuriApl.map((t) => `${t} ${(D.aplicatii || []).filter((r) => r.tip === t).reduce((a, r) => a + num(r.ore), 0)}`).join(', ');
+    if ($('#sum-pond')) { const pc = num(D.evaluare.curs.pondere), pa = num(D.evaluare.apl.pondere); const el = $('#sum-pond'); el.textContent = `${pc} + ${pa} = ${pc + pa} %${pc + pa === 100 ? ' ✓' : ' ✗'}`; el.className = pc + pa === 100 ? 'good' : 'bad'; }
     const v = Model.validate(doc, { alteTeme: ctx.alteTeme });
     $('#val-summary').innerHTML = `<span class="${v.erori.length ? 'bad' : 'good'}">${v.erori.length ? `${v.erori.length} erori blocante` : 'fără erori blocante'}</span> · <span class="${v.avertismente.length ? 'warnc' : ''}">${v.avertismente.length} avertismente</span> <a href="#" id="val-toggle">detalii</a>`;
     $('#val-list').innerHTML = `${v.erori.map((e) => `<div class="bad">✖ ${esc(e)}</div>`).join('')}${v.avertismente.map((w) => `<div class="warnc">⚠ ${esc(w)}</div>`).join('')}`;
@@ -1409,7 +1437,19 @@ function renderEditor(fx, doc, verif, ctx) {
     }
     recalc();
   });
-  app.addEventListener('change', (e) => { const t = e.target; if (t.tagName === 'SELECT' && t.dataset.path) { setPath(doc, t.dataset.path, t.value); recalc(); } });
+  app.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.tagName === 'SELECT' && t.dataset.path) { setPath(doc, t.dataset.path, t.value); recalc(); }
+    if (t.tagName === 'SELECT' && t.dataset.met && t.value) {
+      // metoda aleasă se adaugă la lista din câmp (separată prin virgulă), fără dubluri; câmpul rămâne editabil liber
+      const inp = $(`textarea[data-path="${t.dataset.met}"]`, app);
+      const cur = (inp.value || '').trim();
+      const have = cur.toLowerCase().split(/\s*[,;]\s*/).filter(Boolean);
+      const parts = t.value.split(/\s*,\s*/).filter((m) => !have.includes(m.toLowerCase()));
+      if (parts.length) { inp.value = cur ? `${cur.replace(/[.;,]\s*$/, '')}, ${parts.join(', ')}` : parts.join(', '); setPath(doc, t.dataset.met, inp.value); inp.dispatchEvent(new Event('input', { bubbles: true })); }
+      t.value = '';
+    }
+  });
   app.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
